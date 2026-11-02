@@ -11,8 +11,10 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
         "Navigate",
         &[
             ("↑ ↓  j k", "move"),
+            ("10j  10k", "move 10 down / up"),
             ("PgUp PgDn", "move by page"),
-            ("g G", "first / last"),
+            ("gg  G", "first / last"),
+            ("5G  5gg", "go to row 5"),
         ],
     ),
     (
@@ -28,7 +30,8 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("n", "clean dependencies"),
             ("c", "clean caches & build output"),
-            ("x", "clean all junk"),
+            ("h", "clean Claude history"),
+            ("x", "clean all of the above"),
             ("d", "delete projects"),
             ("o", "open in file manager"),
         ],
@@ -39,6 +42,7 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("/", "search by name"),
             ("f", "cycle filter"),
             ("s", "cycle sort"),
+            ("S", "reverse sort"),
             ("r", "rescan"),
             ("q", "quit"),
         ],

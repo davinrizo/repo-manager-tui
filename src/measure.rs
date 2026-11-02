@@ -15,6 +15,15 @@ pub fn measure(project: &Path) -> Usage {
     usage
 }
 
+pub fn size_of(path: &Path) -> u64 {
+    let mut seen = InodeSet::new();
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_dir() => dir_size(path, &mut seen),
+        Ok(meta) => disk_usage(&meta, &mut seen),
+        Err(_) => 0,
+    }
+}
+
 fn walk(root: &Path, dir: &Path, artifacts: &mut Vec<Artifact>, seen: &mut InodeSet) -> u64 {
     let Ok(entries) = fs::read_dir(dir) else {
         return 0;

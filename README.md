@@ -26,7 +26,12 @@ Built with [Ratatui](https://ratatui.rs).
   | `NO REMOTE`   | git repo without a remote                      |
   | `NO GIT`      | not a git repo at all                          |
 
-- **Clean** dependencies, caches, or both — for one repo or many.
+- **Claude history** — Claude Code's chat history (`~/.claude/projects`) is
+  matched to the folder each conversation was started in. History for parent
+  folders (e.g. a workspace holding several repos) appears as a `FOLDER` row,
+  and history for folders that no longer exist appears as a `GONE` row.
+  Claude's `memory/` and any session active in the last 15 minutes are kept.
+- **Clean** dependencies, caches, Claude history, or all of them — for one repo or many.
 - **Delete** whole repos, with stronger confirmation for anything not backed up.
 - Search, filters, sorting, and multi-select.
 
@@ -50,15 +55,17 @@ repo-manager --depth 6 ~/code    # search deeper (default: 4)
 
 | Key            | Action                                        |
 | -------------- | --------------------------------------------- |
-| `↑ ↓` / `j k`  | move                                          |
+| `↑ ↓` / `j k`  | move; prefix a count to repeat (`10j`, `10k`)  |
+| `gg` / `G`     | first / last row; `5G` jumps to row 5          |
 | `space`        | mark / unmark                                 |
 | `a`            | mark / unmark all visible                     |
-| `n` `c` `x`    | clean dependencies / caches / all junk        |
+| `n` `c` `h` `x`| clean dependencies / caches / Claude history / all |
 | `d`            | delete projects                               |
 | `o`            | open in file manager                          |
 | `/`            | search by name                                |
 | `f`            | filter: all → safe → at risk → has junk       |
-| `s`            | sort: size → junk → status → oldest commit → name |
+| `s`            | sort: size → junk → status → last commit → name |
+| `S`            | reverse sort direction                        |
 | `r`            | rescan                                        |
 | `Esc`          | clear search, then marks                      |
 | `?`            | help                                          |
@@ -76,12 +83,16 @@ losing work requires deliberate intent:
 - Deleting a project that is not `SAFE` requires typing `delete`.
 - `SAFE` projects are re-checked immediately before deletion and skipped if
   anything changed since the scan.
-- Cleaning only removes recognised junk folders inside the project.
+- Cleaning only removes recognised junk folders inside the project, and Claude
+  history only inside the Claude projects folder.
+- `FOLDER` and `GONE` rows can only have their Claude history cleaned, never be deleted.
 - Symlinks are never followed; scan roots, their parents, paths outside the
   roots, and the current working directory are never deleted.
 
 The unpushed check compares against your local remote-tracking refs; it does
 not fetch. Run `git fetch` first if a remote may have been rewritten.
+
+Set `CLAUDE_CONFIG_DIR` if your Claude Code config lives somewhere other than `~/.claude`.
 
 ## Development
 
@@ -99,6 +110,7 @@ cargo clippy --all-targets
 | `measure`     | disk usage and junk detection                    |
 | `git`         | repository status and safety classification      |
 | `clean`       | remove junk folders                              |
+| `claude`      | locate, attribute, and clear Claude history      |
 | `delete`      | delete projects with path guards                 |
 | `disk`        | volume capacity via `statvfs`                    |
 | `app/`        | state, key handling, background tasks            |

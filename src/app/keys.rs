@@ -4,6 +4,8 @@ use super::{App, DeleteRequest, Mode};
 use crate::clean::CleanScope;
 
 const MAX_INPUT_LEN: usize = 32;
+const MAX_COUNT: usize = 99_999;
+const PAGE: usize = 10;
 
 impl App {
     pub fn on_key(&mut self, key: KeyEvent) {
@@ -21,6 +23,19 @@ impl App {
     }
 
     fn on_browse_key(&mut self, key: KeyEvent) {
+        if let KeyCode::Char(digit @ '0'..='9') = key.code
+            && (digit != '0' || self.count.is_some())
+        {
+            let digit = digit.to_digit(10).map_or(0, |d| d as usize);
+            self.count = Some((self.count.unwrap_or(0) * 10 + digit).min(MAX_COUNT));
+            return;
+        }
+
+        let count = self.count.take();
+        let pending_g = std::mem::take(&mut self.pending_g);
+        let steps = count.unwrap_or(1);
+        let line = count.map(|n| n - 1);
+
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Esc if !self.query.is_empty() => {
@@ -35,21 +50,33 @@ impl App {
                 self.rebuild_view();
             }
             KeyCode::Char('o') => self.open_selected(),
-            KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
-            KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
-            KeyCode::PageDown => self.move_by(10),
-            KeyCode::PageUp => self.move_by(-10),
-            KeyCode::Home | KeyCode::Char('g') => self.move_to(0),
-            KeyCode::End | KeyCode::Char('G') => self.move_to(usize::MAX),
+            KeyCode::Down | KeyCode::Char('j') => self.move_down(steps),
+            KeyCode::Up | KeyCode::Char('k') => self.move_up(steps),
+            KeyCode::PageDown => self.move_down(steps * PAGE),
+            KeyCode::PageUp => self.move_up(steps * PAGE),
+            KeyCode::Char('g') if pending_g => self.move_to(line.unwrap_or(0)),
+            KeyCode::Char('g') => {
+                self.pending_g = true;
+                self.count = count;
+            }
+            KeyCode::Char('G') => self.move_to(line.unwrap_or(usize::MAX)),
+            KeyCode::Home => self.move_to(0),
+            KeyCode::End => self.move_to(usize::MAX),
             KeyCode::Char(' ') => self.toggle_mark(),
             KeyCode::Char('a') => self.toggle_mark_all(),
             KeyCode::Char('s') => {
                 self.sort = self.sort.next();
+                self.sort_reversed = false;
+                self.rebuild_view();
+            }
+            KeyCode::Char('S') => {
+                self.sort_reversed = !self.sort_reversed;
                 self.rebuild_view();
             }
             KeyCode::Char('r') => self.rescan(),
             KeyCode::Char('n') => self.request_clean(CleanScope::Deps),
             KeyCode::Char('c') => self.request_clean(CleanScope::Cache),
+            KeyCode::Char('h') => self.request_clean(CleanScope::Claude),
             KeyCode::Char('x') => self.request_clean(CleanScope::All),
             KeyCode::Char('d') => self.request_delete(),
             _ => {}
@@ -63,8 +90,8 @@ impl App {
                 self.query.clear();
                 self.mode = Mode::Browse;
             }
-            KeyCode::Down => self.move_by(1),
-            KeyCode::Up => self.move_by(-1),
+            KeyCode::Down => self.move_down(1),
+            KeyCode::Up => self.move_up(1),
             KeyCode::Backspace => {
                 self.query.pop();
             }

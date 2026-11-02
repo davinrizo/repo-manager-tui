@@ -8,6 +8,7 @@ use crate::project::{Artifact, ArtifactKind};
 pub enum CleanScope {
     Deps,
     Cache,
+    Claude,
     All,
 }
 
@@ -16,6 +17,7 @@ impl CleanScope {
         match self {
             CleanScope::Deps => "Clean dependencies",
             CleanScope::Cache => "Clean caches & build output",
+            CleanScope::Claude => "Clean Claude history",
             CleanScope::All => "Clean all junk",
         }
     }
@@ -24,6 +26,7 @@ impl CleanScope {
         match self {
             CleanScope::Deps => "dependencies",
             CleanScope::Cache => "caches",
+            CleanScope::Claude => "Claude history",
             CleanScope::All => "junk",
         }
     }
@@ -32,8 +35,17 @@ impl CleanScope {
         match self {
             CleanScope::Deps => kind == ArtifactKind::Deps,
             CleanScope::Cache => kind == ArtifactKind::Cache,
+            CleanScope::Claude => false,
             CleanScope::All => true,
         }
+    }
+
+    pub fn covers_files(self) -> bool {
+        self != CleanScope::Claude
+    }
+
+    pub fn covers_claude(self) -> bool {
+        matches!(self, CleanScope::Claude | CleanScope::All)
     }
 }
 

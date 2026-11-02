@@ -1,4 +1,5 @@
 mod app;
+mod claude;
 mod clean;
 mod delete;
 mod discover;
@@ -16,7 +17,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
-use app::App;
+use app::{App, Config};
 
 /// Find code repositories and reclaim the disk space they use.
 #[derive(Parser)]
@@ -45,7 +46,11 @@ fn main() -> Result<()> {
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let mut app = App::new(roots, args.depth);
+    let mut app = App::new(Config {
+        roots,
+        max_depth: args.depth,
+        claude_dir: claude::default_projects_dir(),
+    });
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app);
     ratatui::restore();

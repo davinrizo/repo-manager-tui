@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use ratatui::widgets::TableState;
 use rayon::prelude::*;
 
+use crate::claude::{self, ClaudeHistory};
 use crate::discover::discover;
 use crate::disk::DiskSpace;
 use crate::git::{self, GitState, Safety};
@@ -26,6 +27,7 @@ enum Msg {
     Discovered(Vec<Project>),
     GitInspected(PathBuf, GitState),
     Measured(PathBuf, Usage),
+    ClaudeUpdated(PathBuf, Vec<ClaudeHistory>),
     Cleaned(PathBuf, u64),
     Deleted(PathBuf, u64),
     Released(PathBuf),
@@ -47,9 +49,13 @@ impl SortKey {
             SortKey::Size => "size",
             SortKey::Junk => "junk",
             SortKey::Status => "status",
-            SortKey::LastCommit => "oldest commit",
+            SortKey::LastCommit => "last commit",
             SortKey::Name => "name",
         }
+    }
+
+    fn descending_by_default(self) -> bool {
+        matches!(self, SortKey::Size | SortKey::Junk)
     }
 
     fn next(self) -> Self {
@@ -143,12 +149,19 @@ pub struct Notice {
     shown_at: Instant,
 }
 
+pub struct Config {
+    pub roots: Vec<PathBuf>,
+    pub max_depth: usize,
+    pub claude_dir: Option<PathBuf>,
+}
+
 pub struct App {
     pub roots: Vec<PathBuf>,
     pub projects: Vec<Project>,
     pub view: Vec<usize>,
     pub table: TableState,
     pub sort: SortKey,
+    pub sort_reversed: bool,
     pub filter: Filter,
     pub query: String,
     pub mode: Mode,
@@ -160,20 +173,24 @@ pub struct App {
     marked: HashSet<PathBuf>,
     busy: HashMap<PathBuf, Task>,
     max_depth: usize,
+    claude_dir: Option<PathBuf>,
     user_moved: bool,
+    count: Option<usize>,
+    pending_g: bool,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
 }
 
 impl App {
-    pub fn new(roots: Vec<PathBuf>, max_depth: usize) -> Self {
+    pub fn new(config: Config) -> Self {
         let (tx, rx) = mpsc::channel();
         let mut app = Self {
-            roots,
+            roots: config.roots,
             projects: Vec::new(),
             view: Vec::new(),
             table: TableState::default(),
             sort: SortKey::Size,
+            sort_reversed: false,
             filter: Filter::All,
             query: String::new(),
             mode: Mode::Browse,
@@ -184,8 +201,11 @@ impl App {
             should_quit: false,
             marked: HashSet::new(),
             busy: HashMap::new(),
-            max_depth,
+            max_depth: config.max_depth,
+            claude_dir: config.claude_dir,
             user_moved: false,
+            count: None,
+            pending_g: false,
             tx,
             rx,
         };
@@ -204,9 +224,17 @@ impl App {
         let tx = self.tx.clone();
         let roots = self.roots.clone();
         let max_depth = self.max_depth;
+        let claude_dir = self.claude_dir.clone();
         thread::spawn(move || {
-            let projects = discover(&roots, max_depth);
-            let paths: Vec<PathBuf> = projects.iter().map(|p| p.path.clone()).collect();
+            let mut projects = discover(&roots, max_depth);
+            if let Some(dir) = claude_dir {
+                claude::assign(&mut projects, claude::load(&dir), &roots);
+            }
+            let paths: Vec<PathBuf> = projects
+                .iter()
+                .filter(|p| p.is_repo())
+                .map(|p| p.path.clone())
+                .collect();
             let repos: Vec<PathBuf> = projects
                 .iter()
                 .filter(|p| matches!(p.git, GitState::Pending))
@@ -252,6 +280,11 @@ impl App {
                     project.usage = Some(usage);
                 }
             }
+            Msg::ClaudeUpdated(path, histories) => {
+                if let Some(project) = self.project_mut(&path) {
+                    project.claude = histories;
+                }
+            }
             Msg::Cleaned(path, freed) => {
                 self.busy.remove(&path);
                 self.freed += freed;
@@ -281,14 +314,14 @@ impl App {
                 if let Some(usage) = &p.usage {
                     s.measured += 1;
                     s.total_size += usage.total;
-                    s.junk += usage.junk();
                 }
-                if let Some(safety) = p.safety() {
+                s.junk += p.junk();
+                if p.is_inspected() {
                     s.inspected += 1;
-                    if safety.is_safe() {
-                        s.safe_count += 1;
-                        s.safe_size += p.size();
-                    }
+                }
+                if p.safety().is_some_and(Safety::is_safe) {
+                    s.safe_count += 1;
+                    s.safe_size += p.size();
                 }
                 s
             },
@@ -298,6 +331,21 @@ impl App {
             summary.marked_size += project.size();
         }
         summary
+    }
+
+    pub fn sort_label(&self) -> String {
+        let descending = self.sort.descending_by_default() != self.sort_reversed;
+        format!(
+            "{} {}",
+            self.sort.label(),
+            if descending { "↓" } else { "↑" }
+        )
+    }
+
+    pub fn pending_keys(&self) -> String {
+        let count = self.count.map(|n| n.to_string()).unwrap_or_default();
+        let g = if self.pending_g { "g" } else { "" };
+        format!("{count}{g}")
     }
 
     pub fn selected(&self) -> Option<&Project> {
@@ -333,7 +381,7 @@ impl App {
             if !self.marked.remove(&path) {
                 self.marked.insert(path);
             }
-            self.move_by(1);
+            self.move_down(1);
         }
     }
 
@@ -395,9 +443,14 @@ impl App {
         self.disk = self.roots.first().and_then(|r| DiskSpace::of(r));
     }
 
-    fn move_by(&mut self, delta: isize) {
+    fn move_down(&mut self, steps: usize) {
         let current = self.table.selected().unwrap_or(0);
-        self.move_to(current.saturating_add_signed(delta));
+        self.move_to(current.saturating_add(steps));
+    }
+
+    fn move_up(&mut self, steps: usize) {
+        let current = self.table.selected().unwrap_or(0);
+        self.move_to(current.saturating_sub(steps));
     }
 
     fn move_to(&mut self, index: usize) {
@@ -437,6 +490,9 @@ impl App {
                 view.sort_by_key(|&i| projects[i].last_commit().unwrap_or(i64::MAX));
             }
             SortKey::Name => view.sort_by_cached_key(|&i| projects[i].name.to_lowercase()),
+        }
+        if self.sort_reversed {
+            view.reverse();
         }
         self.view = view;
 

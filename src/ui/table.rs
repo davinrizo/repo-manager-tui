@@ -6,16 +6,18 @@ use ratatui::widgets::{Block, Cell, Row, Table};
 use super::theme;
 use crate::app::{App, Filter, Summary, Task};
 use crate::format::{bytes, percent};
-use crate::project::{ArtifactKind, Project};
+use crate::project::{ArtifactKind, Project, ProjectKind};
 
-const COLUMNS: [(&str, Constraint); 7] = [
+const SIZE_WIDTH: u16 = 8;
+const COLUMNS: [(&str, Constraint); 8] = [
     ("Name", Constraint::Fill(1)),
     ("Status", Constraint::Length(11)),
-    ("Size", Constraint::Length(9)),
+    ("Size", Constraint::Length(SIZE_WIDTH)),
     ("% Disk", Constraint::Length(6)),
-    ("Junk", Constraint::Length(9)),
-    ("Deps", Constraint::Length(9)),
-    ("Cache", Constraint::Length(9)),
+    ("Junk", Constraint::Length(SIZE_WIDTH)),
+    ("Deps", Constraint::Length(SIZE_WIDTH)),
+    ("Cache", Constraint::Length(SIZE_WIDTH)),
+    ("Claude", Constraint::Length(SIZE_WIDTH)),
 ];
 
 pub fn render(frame: &mut Frame, app: &mut App, summary: &Summary, area: Rect) {
@@ -30,7 +32,7 @@ pub fn render(frame: &mut Frame, app: &mut App, summary: &Summary, area: Rect) {
         )
     });
 
-    let mut parts = vec![format!("Projects · sorted by {}", app.sort.label())];
+    let mut parts = vec![format!("Projects · sorted by {}", app.sort_label())];
     if app.filter != Filter::All {
         parts.push(format!("showing {}", app.filter.label()));
     }
@@ -61,10 +63,13 @@ fn project_row(
     marked: bool,
     task: Option<Task>,
 ) -> Row<'static> {
-    let status = match (task, project.safety()) {
-        (Some(task), _) => Cell::from(task.label()).fg(theme::ACCENT),
-        (None, Some(safety)) => Cell::from(safety.label()).fg(theme::safety_color(safety)),
-        (None, None) => pending(),
+    let status = match (task, project.kind, project.safety()) {
+        (Some(task), _, _) => Cell::from(task.label()).fg(theme::ACCENT),
+        (None, ProjectKind::Repo, Some(safety)) => {
+            Cell::from(safety.label()).fg(theme::safety_color(safety))
+        }
+        (None, ProjectKind::Repo, None) => pending(),
+        (None, kind, _) => Cell::from(kind.label()).fg(theme::MUTED),
     };
     let name = if marked {
         Cell::from(format!("● {}", project.name))
@@ -77,15 +82,24 @@ fn project_row(
     let Some(usage) = &project.usage else {
         return Row::new([name, status, pending()]);
     };
-    let junk = usage.junk();
+    let junk = project.junk();
+    let (size, share) = if project.is_repo() {
+        (
+            Cell::from(bytes(usage.total)),
+            Cell::from(format!("{:.1}", percent(usage.total, disk_total))).fg(theme::MUTED),
+        )
+    } else {
+        (Cell::from("-").fg(theme::MUTED), Cell::from(""))
+    };
     Row::new([
         name,
         status,
-        Cell::from(bytes(usage.total)),
-        Cell::from(format!("{:.1}", percent(usage.total, disk_total))).fg(theme::MUTED),
+        size,
+        share,
         size_cell(junk).fg(if junk > 0 { theme::WARN } else { theme::MUTED }),
         size_cell(usage.junk_of(ArtifactKind::Deps)),
         size_cell(usage.junk_of(ArtifactKind::Cache)),
+        size_cell(project.claude_size()),
     ])
 }
 

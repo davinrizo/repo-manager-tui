@@ -88,7 +88,7 @@ fn search<'a>(
     any
 }
 
-fn display_name(root: &Path, path: &Path) -> String {
+pub fn display_name(root: &Path, path: &Path) -> String {
     match path.strip_prefix(root) {
         Ok(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
         _ => path.file_name().map_or_else(

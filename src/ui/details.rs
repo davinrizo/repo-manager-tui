@@ -8,7 +8,7 @@ use super::theme;
 use crate::app::App;
 use crate::format::{ago, bytes};
 use crate::git::{GitState, GitStatus, Safety};
-use crate::project::{Project, Usage};
+use crate::project::{Project, ProjectKind, Usage};
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::bordered().title(" Details ");
@@ -33,12 +33,57 @@ fn project_lines(project: &Project) -> Vec<Line<'static>> {
         Line::from(project.path.display().to_string()).fg(theme::MUTED),
         Line::default(),
     ];
-    lines.extend(git_lines(&project.git));
-    lines.push(Line::default());
-    match &project.usage {
-        Some(usage) => lines.extend(usage_lines(usage)),
-        None => lines.push(Line::from("Measuring…").fg(theme::MUTED)),
+    match project.kind {
+        ProjectKind::Repo => {
+            lines.extend(git_lines(&project.git));
+            lines.push(Line::default());
+            match &project.usage {
+                Some(usage) => lines.extend(usage_lines(usage)),
+                None => lines.push(Line::from("Measuring…").fg(theme::MUTED)),
+            }
+        }
+        ProjectKind::Folder => lines.push(
+            Line::from(
+                "Folder that holds other projects. Only its Claude history is managed here.",
+            )
+            .fg(theme::MUTED),
+        ),
+        ProjectKind::Missing => lines.push(
+            Line::from("This folder no longer exists. Its Claude history was left behind.")
+                .fg(theme::WARN),
+        ),
     }
+    lines.extend(claude_lines(project));
+    lines
+}
+
+fn claude_lines(project: &Project) -> Vec<Line<'static>> {
+    if project.claude.is_empty() {
+        return Vec::new();
+    }
+    let sessions = project.claude_sessions();
+    let noun = if sessions == 1 { "session" } else { "sessions" };
+    let mut lines = vec![
+        Line::default(),
+        Line::from(vec![
+            Span::raw("Claude history  ").bold(),
+            Span::raw(bytes(project.claude_size())).fg(theme::WARN),
+            Span::raw(format!("  ·  {sessions} {noun}")).fg(theme::MUTED),
+        ]),
+    ];
+    let home = std::env::var("HOME").unwrap_or_default();
+    lines.extend(project.claude.iter().map(|history| {
+        let dir = history.dir.display().to_string();
+        let dir = match dir.strip_prefix(&home) {
+            Some(rest) if !home.is_empty() => format!("~{rest}"),
+            _ => dir,
+        };
+        Line::from(vec![
+            Span::raw(format!("{:>9}  ", bytes(history.size))),
+            Span::raw(dir).fg(theme::MUTED),
+        ])
+    }));
+    lines.push(Line::from("memory/ and active sessions are always kept").fg(theme::MUTED));
     lines
 }
 

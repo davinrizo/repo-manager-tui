@@ -18,10 +18,10 @@ const KEYS: &[(&str, &str)] = &[
     ("↑↓", "move"),
     ("space", "mark"),
     ("d", "delete"),
-    ("n/c/x", "clean deps/cache/all"),
+    ("n/c/h/x", "clean deps/cache/claude/all"),
     ("/", "search"),
     ("f", "filter"),
-    ("s", "sort"),
+    ("s/S", "sort/reverse"),
     ("?", "help"),
     ("q", "quit"),
 ];
@@ -72,11 +72,18 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(line, area);
         return;
     }
+    let pending = app.pending_keys();
+    let prefix = (!pending.is_empty()).then(|| {
+        Span::raw(format!(" {pending} "))
+            .bold()
+            .reversed()
+            .fg(theme::ACCENT)
+    });
     let spans = KEYS.iter().flat_map(|(key, action)| {
         [
             Span::raw(format!(" {key}")).bold().fg(theme::ACCENT),
             Span::raw(format!(" {action} ")),
         ]
     });
-    frame.render_widget(Line::from_iter(spans), area);
+    frame.render_widget(Line::from_iter(prefix.into_iter().chain(spans)), area);
 }

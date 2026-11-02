@@ -2,6 +2,18 @@ use super::*;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{Terminal, backend::TestBackend};
 use std::fs;
+use std::path::Path;
+use std::time::SystemTime;
+
+fn start(root: &Path, claude_dir: Option<PathBuf>) -> App {
+    let mut app = App::new(Config {
+        roots: vec![root.canonicalize().unwrap()],
+        max_depth: 4,
+        claude_dir,
+    });
+    wait_until(&mut app, scan_finished);
+    app
+}
 
 fn wait_until(app: &mut App, done: impl Fn(&App) -> bool) {
     for _ in 0..600 {
@@ -48,8 +60,7 @@ fn cleans_dependencies_after_confirmation() {
     )
     .unwrap();
 
-    let mut app = App::new(vec![root.canonicalize().unwrap()], 4);
-    wait_until(&mut app, scan_finished);
+    let mut app = start(&root, None);
 
     press(&mut app, 'n');
     assert!(matches!(app.mode, app::Mode::ConfirmClean(_)));
@@ -74,8 +85,7 @@ fn cancelling_keeps_files() {
     fs::create_dir_all(project.join("node_modules/a")).unwrap();
     fs::write(project.join("package.json"), "{}").unwrap();
 
-    let mut app = App::new(vec![root.canonicalize().unwrap()], 4);
-    wait_until(&mut app, scan_finished);
+    let mut app = start(&root, None);
     press(&mut app, 'x');
     press(&mut app, 'n');
 
@@ -87,6 +97,7 @@ fn cancelling_keeps_files() {
 struct Fixture {
     root: PathBuf,
     remotes: PathBuf,
+    claude: PathBuf,
 }
 
 impl Fixture {
@@ -96,9 +107,11 @@ impl Fixture {
         let fixture = Self {
             root: base.join("root"),
             remotes: base.join("remotes"),
+            claude: base.join("claude-projects"),
         };
         fs::create_dir_all(&fixture.root).unwrap();
         fs::create_dir_all(&fixture.remotes).unwrap();
+        fs::create_dir_all(&fixture.claude).unwrap();
         fixture
     }
 
@@ -138,10 +151,26 @@ impl Fixture {
         path
     }
 
+    fn claude_history(&self, relative: &str) -> PathBuf {
+        let origin = self.root.canonicalize().unwrap().join(relative);
+        let dir = self.claude.join(claude::encode(&origin));
+        fs::create_dir_all(dir.join("memory")).unwrap();
+        fs::write(dir.join("memory/MEMORY.md"), "remember this").unwrap();
+        let session = dir.join("old.jsonl");
+        let line = serde_json::json!({ "cwd": origin }).to_string();
+        fs::write(&session, format!("{line}\n{}", "x".repeat(20_000))).unwrap();
+        let hour_ago = SystemTime::now() - Duration::from_secs(3600);
+        fs::File::options()
+            .write(true)
+            .open(&session)
+            .unwrap()
+            .set_modified(hour_ago)
+            .unwrap();
+        dir
+    }
+
     fn app(&self) -> App {
-        let mut app = App::new(vec![self.root.canonicalize().unwrap()], 4);
-        wait_until(&mut app, scan_finished);
-        app
+        start(&self.root, Some(self.claude.clone()))
     }
 }
 
@@ -338,12 +367,66 @@ fn help_opens_and_closes_with_any_key() {
     assert!(matches!(app.mode, app::Mode::Browse));
 }
 
+fn row<'a>(app: &'a App, name: &str) -> &'a project::Project {
+    app.projects.iter().find(|p| p.name == name).unwrap()
+}
+
+#[test]
+fn attributes_claude_history_to_repos_parent_folders_and_deleted_paths() {
+    let fixture = Fixture::new("claude-assign");
+    fixture.plain_project("his/his-be");
+    fixture.plain_project("his/his-fe");
+    fixture.claude_history("his/his-be");
+    fixture.claude_history("his");
+    fixture.claude_history("old-repo");
+    let app = fixture.app();
+
+    assert!(row(&app, "his/his-be").claude_size() > 0);
+    assert_eq!(row(&app, "his/his-fe").claude_size(), 0);
+    assert_eq!(row(&app, "his").kind, project::ProjectKind::Folder);
+    assert_eq!(row(&app, "old-repo").kind, project::ProjectKind::Missing);
+    assert!(app.summary().junk > 0);
+}
+
+#[test]
+fn cleans_claude_history_but_keeps_memory() {
+    let fixture = Fixture::new("claude-clean");
+    fixture.plain_project("his/his-be");
+    let history = fixture.claude_history("his");
+    let mut app = fixture.app();
+
+    select(&mut app, "his");
+    press(&mut app, 'h');
+    assert!(render(&mut app).contains("Clean Claude history"));
+    press(&mut app, 'y');
+    wait_until(&mut app, |a| a.freed > 0);
+
+    assert!(!history.join("old.jsonl").exists());
+    assert!(history.join("memory/MEMORY.md").exists());
+    assert!(fixture.root.join("his/his-be/package.json").exists());
+    assert_eq!(row(&app, "his").claude_size(), 0);
+}
+
+#[test]
+fn folder_rows_cannot_be_deleted() {
+    let fixture = Fixture::new("claude-nodelete");
+    fixture.plain_project("his/his-be");
+    fixture.claude_history("his");
+    let mut app = fixture.app();
+
+    select(&mut app, "his");
+    press(&mut app, 'd');
+
+    assert!(matches!(app.mode, app::Mode::Browse));
+    assert!(fixture.root.join("his/his-be").exists());
+    assert!(app.notice.as_ref().unwrap().text.contains("Claude history"));
+}
+
 #[test]
 #[ignore = "scans a real folder; run with SCAN_DIR=<path> cargo test render_snapshot -- --ignored --nocapture"]
 fn render_snapshot() {
     let dir = std::env::var("SCAN_DIR").unwrap_or_else(|_| ".".into());
-    let mut app = App::new(vec![PathBuf::from(dir).canonicalize().unwrap()], 4);
-    wait_until(&mut app, scan_finished);
+    let mut app = start(Path::new(&dir), claude::default_projects_dir());
     if let Ok(key) = std::env::var("PRESS") {
         key.chars().for_each(|c| press(&mut app, c));
     }

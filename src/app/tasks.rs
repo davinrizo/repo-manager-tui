@@ -1,8 +1,9 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::thread;
 
 use super::{App, Mode, Msg, NoticeLevel};
+use crate::claude::{self, ClaudeHistory};
 use crate::clean::{self, CleanScope};
 use crate::delete;
 use crate::format::bytes;
@@ -29,11 +30,20 @@ pub struct CleanTarget {
     pub path: PathBuf,
     pub name: String,
     pub artifacts: Vec<Artifact>,
+    pub claude: Vec<ClaudeHistory>,
 }
 
 impl CleanTarget {
     pub fn size(&self) -> u64 {
-        self.artifacts.iter().map(|a| a.size).sum()
+        self.artifacts.iter().map(|a| a.size).sum::<u64>() + self.claude_size()
+    }
+
+    pub fn claude_size(&self) -> u64 {
+        self.claude.iter().map(|h| h.size).sum()
+    }
+
+    pub fn claude_sessions(&self) -> usize {
+        self.claude.iter().map(|h| h.sessions).sum()
     }
 }
 
@@ -45,6 +55,14 @@ pub struct CleanRequest {
 impl CleanRequest {
     pub fn size(&self) -> u64 {
         self.targets.iter().map(CleanTarget::size).sum()
+    }
+
+    pub fn has_files(&self) -> bool {
+        self.targets.iter().any(|t| !t.artifacts.is_empty())
+    }
+
+    pub fn has_claude(&self) -> bool {
+        self.targets.iter().any(|t| !t.claude.is_empty())
     }
 }
 
@@ -87,21 +105,30 @@ impl App {
                 skipped.push(format!("{} is busy", project.name));
                 continue;
             }
-            let Some(usage) = &project.usage else {
-                skipped.push(format!("{} is still being measured", project.name));
-                continue;
+            let artifacts: Vec<Artifact> = match (&project.usage, scope.covers_files()) {
+                (_, false) => Vec::new(),
+                (Some(usage), true) => usage
+                    .artifacts
+                    .iter()
+                    .filter(|a| scope.includes(a.kind))
+                    .cloned()
+                    .collect(),
+                (None, true) => {
+                    skipped.push(format!("{} is still being measured", project.name));
+                    continue;
+                }
             };
-            let artifacts: Vec<Artifact> = usage
-                .artifacts
-                .iter()
-                .filter(|a| scope.includes(a.kind))
-                .cloned()
-                .collect();
-            if !artifacts.is_empty() {
+            let claude = if scope.covers_claude() {
+                project.claude.clone()
+            } else {
+                Vec::new()
+            };
+            if !artifacts.is_empty() || !claude.is_empty() {
                 targets.push(CleanTarget {
                     path: project.path.clone(),
                     name: project.name.clone(),
                     artifacts,
+                    claude,
                 });
             }
         }
@@ -124,7 +151,9 @@ impl App {
         let mut targets = Vec::new();
         let mut skipped = Vec::new();
         for project in self.targets() {
-            let refusal = if self.task(&project.path).is_some() {
+            let refusal = if !project.is_repo() {
+                Some("only its Claude history can be cleaned (h)")
+            } else if self.task(&project.path).is_some() {
                 Some("it is busy")
             } else if project.safety().is_none() {
                 Some("git is still being checked")
@@ -182,7 +211,8 @@ impl App {
         );
 
         let tx = self.tx.clone();
-        thread::spawn(move || run_clean(&tx, request));
+        let claude_dir = self.claude_dir.clone();
+        thread::spawn(move || run_clean(&tx, request, claude_dir.as_deref()));
     }
 
     pub(super) fn start_delete(&mut self, request: DeleteRequest, confirmed_unsafe: bool) {
@@ -198,29 +228,56 @@ impl App {
     }
 }
 
-fn run_clean(tx: &Sender<Msg>, request: CleanRequest) {
+fn run_clean(tx: &Sender<Msg>, request: CleanRequest, claude_dir: Option<&Path>) {
     let count = request.targets.len();
     let mut freed = 0;
+    let mut kept_active = 0;
     let mut failures = Vec::new();
     let mut last_name = String::new();
 
     for target in request.targets {
         let report = clean::remove_artifacts(&target.path, &target.artifacts);
-        freed += report.freed;
+        let mut target_freed = report.freed;
         failures.extend(
             report
                 .failures
                 .into_iter()
                 .map(|f| format!("{}/{f}", target.name)),
         );
-        let _ = tx.send(Msg::Measured(target.path.clone(), measure(&target.path)));
-        if target.path.join(".git").exists() {
-            let _ = tx.send(Msg::GitInspected(
-                target.path.clone(),
-                git::inspect(&target.path),
-            ));
+
+        if !target.artifacts.is_empty() {
+            let _ = tx.send(Msg::Measured(target.path.clone(), measure(&target.path)));
+            if target.path.join(".git").exists() {
+                let _ = tx.send(Msg::GitInspected(
+                    target.path.clone(),
+                    git::inspect(&target.path),
+                ));
+            }
         }
-        let _ = tx.send(Msg::Cleaned(target.path, report.freed));
+
+        if !target.claude.is_empty() {
+            for history in &target.claude {
+                match claude_dir.map(|dir| claude::clear(dir, &history.dir)) {
+                    Some(Ok(cleared)) => {
+                        target_freed += cleared.freed;
+                        kept_active += cleared.kept_active;
+                    }
+                    Some(Err(err)) => {
+                        failures.push(format!("{} Claude history: {err}", target.name));
+                    }
+                    None => failures.push(format!("{}: Claude folder not found", target.name)),
+                }
+            }
+            let remaining = target
+                .claude
+                .iter()
+                .filter_map(|h| claude::inspect(&h.dir))
+                .collect();
+            let _ = tx.send(Msg::ClaudeUpdated(target.path.clone(), remaining));
+        }
+
+        freed += target_freed;
+        let _ = tx.send(Msg::Cleaned(target.path, target_freed));
         last_name = target.name;
     }
 
@@ -229,8 +286,13 @@ fn run_clean(tx: &Sender<Msg>, request: CleanRequest) {
     } else {
         format!("{count} projects")
     };
+    let kept = match kept_active {
+        0 => String::new(),
+        1 => " · kept 1 active Claude session".to_owned(),
+        n => format!(" · kept {n} active Claude sessions"),
+    };
     let _ = tx.send(outcome(
-        format!("Freed {} from {subject}", bytes(freed)),
+        format!("Freed {} from {subject}{kept}", bytes(freed)),
         &failures,
     ));
 }
