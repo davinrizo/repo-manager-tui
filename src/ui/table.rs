@@ -4,7 +4,7 @@ use ratatui::style::{Style, Stylize};
 use ratatui::widgets::{Block, Cell, Row, Table};
 
 use super::theme;
-use crate::app::App;
+use crate::app::{App, Summary, Task};
 use crate::format::{bytes, percent};
 use crate::project::{ArtifactKind, Project};
 
@@ -18,32 +18,56 @@ const COLUMNS: [(&str, Constraint); 7] = [
     ("Cache", Constraint::Length(9)),
 ];
 
-pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
+pub fn render(frame: &mut Frame, app: &mut App, summary: &Summary, area: Rect) {
     let disk_total = app.disk.map_or(0, |d| d.total);
     let rows = app.view.iter().map(|&i| {
+        let project = &app.projects[i];
         project_row(
-            &app.projects[i],
+            project,
             disk_total,
-            app.is_busy(&app.projects[i].path),
+            app.is_marked(&project.path),
+            app.task(&project.path),
         )
     });
 
+    let marked = if summary.marked_count > 0 {
+        format!(
+            "· {} marked ({}) ",
+            summary.marked_count,
+            bytes(summary.marked_size)
+        )
+    } else {
+        String::new()
+    };
+    let title = format!(" Projects · sorted by {} {marked}", app.sort.label());
+
     let table = Table::new(rows, COLUMNS.map(|(_, width)| width))
         .header(Row::new(COLUMNS.map(|(title, _)| title)).style(Style::new().bold()))
-        .block(Block::bordered().title(format!(" Projects · sorted by {} ", app.sort.label())))
+        .block(Block::bordered().title(title))
         .row_highlight_style(theme::selected_row())
         .highlight_symbol("▶ ");
 
     frame.render_stateful_widget(table, area, &mut app.table);
 }
 
-fn project_row(project: &Project, disk_total: u64, busy: bool) -> Row<'static> {
-    let status = match project.safety() {
-        _ if busy => Cell::from("CLEANING…").fg(theme::ACCENT),
-        Some(safety) => Cell::from(safety.label()).fg(theme::safety_color(safety)),
-        None => pending(),
+fn project_row(
+    project: &Project,
+    disk_total: u64,
+    marked: bool,
+    task: Option<Task>,
+) -> Row<'static> {
+    let status = match (task, project.safety()) {
+        (Some(task), _) => Cell::from(task.label()).fg(theme::ACCENT),
+        (None, Some(safety)) => Cell::from(safety.label()).fg(theme::safety_color(safety)),
+        (None, None) => pending(),
     };
-    let name = Cell::from(project.name.clone());
+    let name = if marked {
+        Cell::from(format!("● {}", project.name))
+            .fg(theme::ACCENT)
+            .bold()
+    } else {
+        Cell::from(format!("  {}", project.name))
+    };
 
     let Some(usage) = &project.usage else {
         return Row::new([name, status, pending()]);

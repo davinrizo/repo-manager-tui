@@ -9,11 +9,14 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
 
-use crate::app::{App, Mode};
+use crate::app::App;
 
 const WIDE_LAYOUT_MIN_WIDTH: u16 = 120;
 const KEYS: &[(&str, &str)] = &[
     ("↑↓/jk", "move"),
+    ("space", "mark"),
+    ("a", "mark all"),
+    ("d", "delete"),
     ("n", "clean deps"),
     ("c", "clean cache"),
     ("x", "clean all"),
@@ -42,13 +45,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .areas(body);
 
     header::render(frame, app, &summary, header_area);
-    table::render(frame, app, table_area);
+    table::render(frame, app, &summary, table_area);
     details::render(frame, app, details_area);
     render_footer(frame, app, footer);
 
-    if let Mode::ConfirmClean(request) = &app.mode {
-        confirm::render(frame, request);
-    }
+    confirm::render(frame, &app.mode);
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {

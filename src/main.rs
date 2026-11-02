@@ -1,5 +1,6 @@
 mod app;
 mod clean;
+mod delete;
 mod discover;
 mod disk;
 mod format;
@@ -159,6 +160,181 @@ mod tests {
         assert!(matches!(app.mode, app::Mode::Browse));
         assert!(project.join("node_modules").exists());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    struct Fixture {
+        root: PathBuf,
+        remotes: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(name: &str) -> Self {
+            let base =
+                std::env::temp_dir().join(format!("repo-manager-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&base);
+            let fixture = Self {
+                root: base.join("root"),
+                remotes: base.join("remotes"),
+            };
+            fs::create_dir_all(&fixture.root).unwrap();
+            fs::create_dir_all(&fixture.remotes).unwrap();
+            fixture
+        }
+
+        fn plain_project(&self, name: &str) -> PathBuf {
+            let path = self.root.join(name);
+            fs::create_dir_all(&path).unwrap();
+            fs::write(path.join("package.json"), "{}").unwrap();
+            path
+        }
+
+        fn pushed_repo(&self, name: &str) -> PathBuf {
+            let path = self.plain_project(name);
+            let remote = self.remotes.join(format!("{name}.git"));
+            git(
+                &self.remotes,
+                &["init", "-q", "--bare", remote.to_str().unwrap()],
+            );
+            git(&path, &["init", "-q", "-b", "main"]);
+            git(&path, &["add", "."]);
+            git(
+                &path,
+                &[
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "commit",
+                    "-qm",
+                    "init",
+                ],
+            );
+            git(
+                &path,
+                &["remote", "add", "origin", remote.to_str().unwrap()],
+            );
+            git(&path, &["push", "-q", "-u", "origin", "main"]);
+            path
+        }
+
+        fn app(&self) -> App {
+            let mut app = App::new(vec![self.root.canonicalize().unwrap()], 4);
+            wait_until(&mut app, scan_finished);
+            app
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(self.root.parent().unwrap());
+        }
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    fn select(app: &mut App, name: &str) {
+        let index = app
+            .view
+            .iter()
+            .position(|&i| app.projects[i].name == name)
+            .unwrap();
+        app.table.select(Some(index));
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        text.chars().for_each(|c| press(app, c));
+    }
+
+    fn delete_request(app: &App) -> &app::DeleteRequest {
+        match &app.mode {
+            app::Mode::ConfirmDelete { request, .. } => request,
+            _ => panic!("delete confirmation is not open"),
+        }
+    }
+
+    #[test]
+    fn deletes_safe_repo_with_single_key() {
+        let fixture = Fixture::new("delete-safe");
+        let repo = fixture.pushed_repo("api");
+        let mut app = fixture.app();
+
+        select(&mut app, "api");
+        press(&mut app, 'd');
+        assert!(!delete_request(&app).requires_typing());
+
+        press(&mut app, 'y');
+        wait_until(&mut app, |a| a.projects.is_empty());
+        assert!(!repo.exists());
+    }
+
+    #[test]
+    fn unsafe_repo_requires_typing_confirmation() {
+        let fixture = Fixture::new("delete-unsafe");
+        let project = fixture.plain_project("scratch");
+        let mut app = fixture.app();
+
+        select(&mut app, "scratch");
+        press(&mut app, 'd');
+        assert!(delete_request(&app).requires_typing());
+        assert!(render(&mut app).contains("NOT fully backed up"));
+
+        press(&mut app, 'y');
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        assert!(matches!(app.mode, app::Mode::ConfirmDelete { .. }));
+        assert!(project.exists());
+
+        app.on_key(KeyEvent::from(KeyCode::Backspace));
+        type_text(&mut app, "delete");
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        wait_until(&mut app, |a| a.projects.is_empty());
+        assert!(!project.exists());
+    }
+
+    #[test]
+    fn skips_repo_that_changed_after_confirmation_opened() {
+        let fixture = Fixture::new("delete-changed");
+        let repo = fixture.pushed_repo("web");
+        let mut app = fixture.app();
+
+        select(&mut app, "web");
+        press(&mut app, 'd');
+        fs::write(repo.join("notes.txt"), "unsaved work").unwrap();
+        press(&mut app, 'y');
+
+        wait_until(&mut app, |a| a.task(&a.projects[0].path).is_none());
+        assert!(repo.join("notes.txt").exists());
+        assert!(app.notice.as_ref().unwrap().text.contains("no longer safe"));
+    }
+
+    #[test]
+    fn deletes_all_marked_projects() {
+        let fixture = Fixture::new("delete-marked");
+        fixture.pushed_repo("one");
+        fixture.pushed_repo("two");
+        let keep = fixture.pushed_repo("three");
+        let mut app = fixture.app();
+
+        select(&mut app, "one");
+        press(&mut app, ' ');
+        select(&mut app, "two");
+        press(&mut app, ' ');
+        assert_eq!(app.summary().marked_count, 2);
+
+        press(&mut app, 'd');
+        assert_eq!(delete_request(&app).targets.len(), 2);
+        press(&mut app, 'y');
+        wait_until(&mut app, |a| a.projects.len() == 1);
+
+        assert_eq!(app.projects[0].name, "three");
+        assert!(keep.exists());
     }
 
     #[test]
