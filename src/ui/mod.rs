@@ -1,6 +1,8 @@
 mod confirm;
 mod details;
 mod header;
+mod help;
+mod popup;
 mod table;
 mod theme;
 
@@ -9,19 +11,18 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
 
-use crate::app::App;
+use crate::app::{App, Mode};
 
 const WIDE_LAYOUT_MIN_WIDTH: u16 = 120;
 const KEYS: &[(&str, &str)] = &[
-    ("↑↓/jk", "move"),
+    ("↑↓", "move"),
     ("space", "mark"),
-    ("a", "mark all"),
     ("d", "delete"),
-    ("n", "clean deps"),
-    ("c", "clean cache"),
-    ("x", "clean all"),
+    ("n/c/x", "clean deps/cache/all"),
+    ("/", "search"),
+    ("f", "filter"),
     ("s", "sort"),
-    ("r", "rescan"),
+    ("?", "help"),
     ("q", "quit"),
 ];
 
@@ -49,10 +50,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     details::render(frame, app, details_area);
     render_footer(frame, app, footer);
 
-    confirm::render(frame, &app.mode);
+    match app.mode {
+        Mode::Help => help::render(frame),
+        _ => confirm::render(frame, &app.mode),
+    }
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
+    if matches!(app.mode, Mode::Search) {
+        let line = Line::from(vec![
+            Span::raw(" / ").bold().fg(theme::ACCENT),
+            Span::raw(app.query.clone()),
+            Span::raw("█").fg(theme::MUTED),
+            Span::raw("   Enter keep · Esc clear").fg(theme::MUTED),
+        ]);
+        frame.render_widget(line, area);
+        return;
+    }
     if let Some(notice) = &app.notice {
         let line = Line::from(format!(" {}", notice.text)).fg(theme::notice_color(notice.level));
         frame.render_widget(line, area);

@@ -13,6 +13,8 @@ impl App {
         }
         match self.mode {
             Mode::Browse => self.on_browse_key(key),
+            Mode::Search => self.on_search_key(key),
+            Mode::Help => self.mode = Mode::Browse,
             Mode::ConfirmClean(_) => self.on_confirm_clean_key(key),
             Mode::ConfirmDelete { .. } => self.on_confirm_delete_key(key),
         }
@@ -21,7 +23,18 @@ impl App {
     fn on_browse_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') => self.should_quit = true,
+            KeyCode::Esc if !self.query.is_empty() => {
+                self.query.clear();
+                self.rebuild_view();
+            }
             KeyCode::Esc => self.marked.clear(),
+            KeyCode::Char('/') => self.mode = Mode::Search,
+            KeyCode::Char('?') => self.mode = Mode::Help,
+            KeyCode::Char('f') => {
+                self.filter = self.filter.next();
+                self.rebuild_view();
+            }
+            KeyCode::Char('o') => self.open_selected(),
             KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
             KeyCode::PageDown => self.move_by(10),
@@ -41,6 +54,24 @@ impl App {
             KeyCode::Char('d') => self.request_delete(),
             _ => {}
         }
+    }
+
+    fn on_search_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter => self.mode = Mode::Browse,
+            KeyCode::Esc => {
+                self.query.clear();
+                self.mode = Mode::Browse;
+            }
+            KeyCode::Down => self.move_by(1),
+            KeyCode::Up => self.move_by(-1),
+            KeyCode::Backspace => {
+                self.query.pop();
+            }
+            KeyCode::Char(c) if self.query.len() < MAX_INPUT_LEN => self.query.push(c),
+            _ => return,
+        }
+        self.rebuild_view();
     }
 
     fn on_confirm_clean_key(&mut self, key: KeyEvent) {

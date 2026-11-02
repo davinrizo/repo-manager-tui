@@ -1,9 +1,8 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Stylize};
+use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
 
+use super::popup::popup;
 use super::theme;
 use crate::app::{CleanRequest, DeleteRequest, Mode};
 use crate::format::bytes;
@@ -13,11 +12,11 @@ const WIDTH: u16 = 72;
 
 pub fn render(frame: &mut Frame, mode: &Mode) {
     match mode {
-        Mode::Browse => {}
         Mode::ConfirmClean(request) => popup(
             frame,
             request.scope.title(),
             theme::WARN,
+            WIDTH,
             clean_lines(request),
         ),
         Mode::ConfirmDelete { request, input } => {
@@ -26,8 +25,9 @@ pub fn render(frame: &mut Frame, mode: &Mode) {
             } else {
                 ("Delete projects", theme::WARN)
             };
-            popup(frame, title, color, delete_lines(request, input));
+            popup(frame, title, color, WIDTH, delete_lines(request, input));
         }
+        Mode::Browse | Mode::Search | Mode::Help => {}
     }
 }
 
@@ -145,30 +145,4 @@ fn choice_line(action: &'static str) -> Line<'static> {
         Span::raw(" n ").bold().reversed().fg(theme::MUTED),
         Span::raw(" cancel"),
     ])
-}
-
-fn popup(frame: &mut Frame, title: &str, color: Color, lines: Vec<Line<'static>>) {
-    let height = u16::try_from(lines.len())
-        .unwrap_or(u16::MAX)
-        .saturating_add(2);
-    let area = centered(frame.area(), WIDTH, height);
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::bordered()
-                .title(format!(" {title} ").bold())
-                .border_style(color),
-        ),
-        area,
-    );
-}
-
-fn centered(area: Rect, width: u16, height: u16) -> Rect {
-    let [row] = Layout::vertical([Constraint::Length(height)])
-        .flex(Flex::Center)
-        .areas(area);
-    let [cell] = Layout::horizontal([Constraint::Length(width)])
-        .flex(Flex::Center)
-        .areas(row);
-    cell
 }

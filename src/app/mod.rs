@@ -4,6 +4,7 @@ mod tasks;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -62,6 +63,43 @@ impl SortKey {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Filter {
+    All,
+    Safe,
+    AtRisk,
+    HasJunk,
+}
+
+impl Filter {
+    pub fn label(self) -> &'static str {
+        match self {
+            Filter::All => "all",
+            Filter::Safe => "safe to delete",
+            Filter::AtRisk => "at risk",
+            Filter::HasJunk => "has junk",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Filter::All => Filter::Safe,
+            Filter::Safe => Filter::AtRisk,
+            Filter::AtRisk => Filter::HasJunk,
+            Filter::HasJunk => Filter::All,
+        }
+    }
+
+    fn matches(self, project: &Project) -> bool {
+        match self {
+            Filter::All => true,
+            Filter::Safe => project.safety().is_some_and(Safety::is_safe),
+            Filter::AtRisk => project.safety().is_some_and(|s| !s.is_safe()),
+            Filter::HasJunk => project.junk() > 0,
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Summary {
     pub projects: usize,
@@ -83,6 +121,8 @@ impl Summary {
 
 pub enum Mode {
     Browse,
+    Search,
+    Help,
     ConfirmClean(CleanRequest),
     ConfirmDelete {
         request: DeleteRequest,
@@ -109,6 +149,8 @@ pub struct App {
     pub view: Vec<usize>,
     pub table: TableState,
     pub sort: SortKey,
+    pub filter: Filter,
+    pub query: String,
     pub mode: Mode,
     pub notice: Option<Notice>,
     pub disk: Option<DiskSpace>,
@@ -132,6 +174,8 @@ impl App {
             view: Vec::new(),
             table: TableState::default(),
             sort: SortKey::Size,
+            filter: Filter::All,
+            query: String::new(),
             mode: Mode::Browse,
             notice: None,
             disk: None,
@@ -228,7 +272,7 @@ impl App {
     }
 
     pub fn summary(&self) -> Summary {
-        self.projects.iter().fold(
+        let mut summary = self.projects.iter().fold(
             Summary {
                 projects: self.projects.len(),
                 ..Summary::default()
@@ -246,13 +290,14 @@ impl App {
                         s.safe_size += p.size();
                     }
                 }
-                if self.marked.contains(&p.path) {
-                    s.marked_count += 1;
-                    s.marked_size += p.size();
-                }
                 s
             },
-        )
+        );
+        for project in self.visible_marked() {
+            summary.marked_count += 1;
+            summary.marked_size += project.size();
+        }
+        summary
     }
 
     pub fn selected(&self) -> Option<&Project> {
@@ -272,12 +317,15 @@ impl App {
         if self.marked.is_empty() {
             self.selected().into_iter().collect()
         } else {
-            self.view
-                .iter()
-                .map(|&i| &self.projects[i])
-                .filter(|p| self.marked.contains(&p.path))
-                .collect()
+            self.visible_marked().collect()
         }
+    }
+
+    fn visible_marked(&self) -> impl Iterator<Item = &Project> {
+        self.view
+            .iter()
+            .map(|&i| &self.projects[i])
+            .filter(|p| self.marked.contains(&p.path))
     }
 
     fn toggle_mark(&mut self) {
@@ -290,10 +338,37 @@ impl App {
     }
 
     fn toggle_mark_all(&mut self) {
-        if self.marked.len() == self.projects.len() {
+        let visible: Vec<PathBuf> = self
+            .view
+            .iter()
+            .map(|&i| self.projects[i].path.clone())
+            .collect();
+        if visible.iter().all(|p| self.marked.contains(p)) {
             self.marked.clear();
         } else {
-            self.marked = self.projects.iter().map(|p| p.path.clone()).collect();
+            self.marked.extend(visible);
+        }
+    }
+
+    fn open_selected(&mut self) {
+        let Some(path) = self.selected().map(|p| p.path.clone()) else {
+            return;
+        };
+        let opener = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        match Command::new(opener)
+            .arg(&path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(mut child) => {
+                thread::spawn(move || child.wait());
+            }
+            Err(err) => self.notify(NoticeLevel::Error, format!("Couldn't run {opener}: {err}")),
         }
     }
 
@@ -344,7 +419,13 @@ impl App {
             .map(|p| p.path.clone());
 
         let projects = &self.projects;
-        let mut view: Vec<usize> = (0..projects.len()).collect();
+        let query = self.query.to_lowercase();
+        let mut view: Vec<usize> = (0..projects.len())
+            .filter(|&i| {
+                let p = &projects[i];
+                self.filter.matches(p) && p.name.to_lowercase().contains(&query)
+            })
+            .collect();
         match self.sort {
             SortKey::Size => view.sort_by_key(|&i| Reverse(projects[i].size())),
             SortKey::Junk => view.sort_by_key(|&i| Reverse(projects[i].junk())),

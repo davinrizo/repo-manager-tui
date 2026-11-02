@@ -77,6 +77,9 @@ impl DeleteRequest {
 
 impl App {
     pub(super) fn request_clean(&mut self, scope: CleanScope) {
+        if self.warn_if_marks_hidden() {
+            return;
+        }
         let mut targets = Vec::new();
         let mut skipped = Vec::new();
         for project in self.targets() {
@@ -115,6 +118,9 @@ impl App {
     }
 
     pub(super) fn request_delete(&mut self) {
+        if self.warn_if_marks_hidden() {
+            return;
+        }
         let mut targets = Vec::new();
         let mut skipped = Vec::new();
         for project in self.targets() {
@@ -153,6 +159,17 @@ impl App {
                 input: String::new(),
             };
         }
+    }
+
+    fn warn_if_marks_hidden(&mut self) -> bool {
+        let hidden = !self.marked.is_empty() && self.visible_marked().next().is_none();
+        if hidden {
+            self.notify(
+                NoticeLevel::Info,
+                "Marked projects are hidden by the search or filter".into(),
+            );
+        }
+        hidden
     }
 
     pub(super) fn start_clean(&mut self, request: CleanRequest) {

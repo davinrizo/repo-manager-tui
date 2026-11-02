@@ -2,6 +2,7 @@
 name = "repo-manager"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 description = "Terminal UI for finding code repositories and reclaiming the disk space they use"
 license = "MIT"
 

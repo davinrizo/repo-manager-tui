@@ -14,7 +14,10 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::bordered().title(" Details ");
     let lines = match app.selected() {
         Some(project) => project_lines(project),
-        None => vec![Line::from("No projects found").fg(theme::MUTED)],
+        None if app.projects.is_empty() => {
+            vec![Line::from("No projects found").fg(theme::MUTED)]
+        }
+        None => vec![Line::from("No projects match the search or filter").fg(theme::MUTED)],
     };
     frame.render_widget(
         Paragraph::new(lines)

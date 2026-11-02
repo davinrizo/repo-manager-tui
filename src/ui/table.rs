@@ -4,7 +4,7 @@ use ratatui::style::{Style, Stylize};
 use ratatui::widgets::{Block, Cell, Row, Table};
 
 use super::theme;
-use crate::app::{App, Summary, Task};
+use crate::app::{App, Filter, Summary, Task};
 use crate::format::{bytes, percent};
 use crate::project::{ArtifactKind, Project};
 
@@ -30,16 +30,21 @@ pub fn render(frame: &mut Frame, app: &mut App, summary: &Summary, area: Rect) {
         )
     });
 
-    let marked = if summary.marked_count > 0 {
-        format!(
-            "· {} marked ({}) ",
+    let mut parts = vec![format!("Projects · sorted by {}", app.sort.label())];
+    if app.filter != Filter::All {
+        parts.push(format!("showing {}", app.filter.label()));
+    }
+    if !app.query.is_empty() {
+        parts.push(format!("matching \"{}\"", app.query));
+    }
+    if summary.marked_count > 0 {
+        parts.push(format!(
+            "{} marked ({})",
             summary.marked_count,
             bytes(summary.marked_size)
-        )
-    } else {
-        String::new()
-    };
-    let title = format!(" Projects · sorted by {} {marked}", app.sort.label());
+        ));
+    }
+    let title = format!(" {} ", parts.join(" · "));
 
     let table = Table::new(rows, COLUMNS.map(|(_, width)| width))
         .header(Row::new(COLUMNS.map(|(title, _)| title)).style(Style::new().bold()))
