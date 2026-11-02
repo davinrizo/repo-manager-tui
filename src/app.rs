@@ -1,22 +1,29 @@
 use std::cmp::Reverse;
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
 use rayon::prelude::*;
 
+use crate::clean::{self, CleanReport, CleanScope};
 use crate::discover::discover;
 use crate::disk::DiskSpace;
+use crate::format::bytes;
 use crate::git::{self, GitState, Safety};
 use crate::measure::measure;
-use crate::project::{Project, Usage};
+use crate::project::{Artifact, Project, Usage};
+
+const NOTICE_DURATION: Duration = Duration::from_secs(6);
 
 enum Msg {
     Discovered(Vec<Project>),
     GitInspected(PathBuf, GitState),
     Measured(PathBuf, Usage),
+    Cleaned(PathBuf, CleanReport),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -67,15 +74,50 @@ impl Summary {
     }
 }
 
+pub struct CleanRequest {
+    pub project: PathBuf,
+    pub name: String,
+    pub scope: CleanScope,
+    pub artifacts: Vec<Artifact>,
+}
+
+impl CleanRequest {
+    pub fn size(&self) -> u64 {
+        self.artifacts.iter().map(|a| a.size).sum()
+    }
+}
+
+pub enum Mode {
+    Browse,
+    ConfirmClean(CleanRequest),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NoticeLevel {
+    Info,
+    Success,
+    Error,
+}
+
+pub struct Notice {
+    pub text: String,
+    pub level: NoticeLevel,
+    shown_at: Instant,
+}
+
 pub struct App {
     pub roots: Vec<PathBuf>,
     pub projects: Vec<Project>,
     pub view: Vec<usize>,
     pub table: TableState,
     pub sort: SortKey,
+    pub mode: Mode,
+    pub notice: Option<Notice>,
     pub disk: Option<DiskSpace>,
+    pub freed: u64,
     pub discovering: bool,
     pub should_quit: bool,
+    busy: HashSet<PathBuf>,
     max_depth: usize,
     user_moved: bool,
     tx: Sender<Msg>,
@@ -91,9 +133,13 @@ impl App {
             view: Vec::new(),
             table: TableState::default(),
             sort: SortKey::Size,
+            mode: Mode::Browse,
+            notice: None,
             disk: None,
+            freed: 0,
             discovering: false,
             should_quit: false,
+            busy: HashSet::new(),
             max_depth,
             user_moved: false,
             tx,
@@ -108,7 +154,7 @@ impl App {
         self.user_moved = false;
         self.projects.clear();
         self.view.clear();
-        self.disk = self.roots.first().and_then(|r| DiskSpace::of(r));
+        self.refresh_disk();
 
         let tx = self.tx.clone();
         let roots = self.roots.clone();
@@ -134,9 +180,9 @@ impl App {
     }
 
     pub fn process_messages(&mut self) -> bool {
-        let mut changed = false;
+        let mut received = false;
         while let Ok(msg) = self.rx.try_recv() {
-            changed = true;
+            received = true;
             match msg {
                 Msg::Discovered(projects) => {
                     self.discovering = false;
@@ -152,12 +198,13 @@ impl App {
                         project.usage = Some(usage);
                     }
                 }
+                Msg::Cleaned(path, report) => self.finish_clean(&path, &report),
             }
         }
-        if changed {
+        if received {
             self.rebuild_view();
         }
-        changed
+        received | self.expire_notice()
     }
 
     pub fn summary(&self) -> Summary {
@@ -189,12 +236,24 @@ impl App {
         self.projects.get(index)
     }
 
+    pub fn is_busy(&self, path: &Path) -> bool {
+        self.busy.contains(path)
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.should_quit = true;
+            return;
+        }
+        match self.mode {
+            Mode::Browse => self.on_browse_key(key),
+            Mode::ConfirmClean(_) => self.on_confirm_key(key),
+        }
+    }
+
+    fn on_browse_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.should_quit = true;
-            }
+            KeyCode::Char('q') => self.should_quit = true,
             KeyCode::Down | KeyCode::Char('j') => self.move_by(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_by(-1),
             KeyCode::PageDown => self.move_by(10),
@@ -206,8 +265,123 @@ impl App {
                 self.rebuild_view();
             }
             KeyCode::Char('r') => self.rescan(),
+            KeyCode::Char('n') => self.request_clean(CleanScope::Deps),
+            KeyCode::Char('c') => self.request_clean(CleanScope::Cache),
+            KeyCode::Char('x') => self.request_clean(CleanScope::All),
             _ => {}
         }
+    }
+
+    fn on_confirm_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Enter => {
+                if let Mode::ConfirmClean(request) = std::mem::replace(&mut self.mode, Mode::Browse)
+                {
+                    self.start_clean(request);
+                }
+            }
+            KeyCode::Char('n' | 'q') | KeyCode::Esc => self.mode = Mode::Browse,
+            _ => {}
+        }
+    }
+
+    fn request_clean(&mut self, scope: CleanScope) {
+        let Some(project) = self.selected() else {
+            return;
+        };
+        let name = project.name.clone();
+        let outcome = if self.is_busy(&project.path) {
+            Err(format!("{name} is already being cleaned"))
+        } else if let Some(usage) = &project.usage {
+            let artifacts: Vec<Artifact> = usage
+                .artifacts
+                .iter()
+                .filter(|a| scope.includes(a.kind))
+                .cloned()
+                .collect();
+            if artifacts.is_empty() {
+                Err(format!("No {} to clean in {name}", scope.noun()))
+            } else {
+                Ok(CleanRequest {
+                    project: project.path.clone(),
+                    name,
+                    scope,
+                    artifacts,
+                })
+            }
+        } else {
+            Err(format!("Still measuring {name}"))
+        };
+
+        match outcome {
+            Ok(request) => self.mode = Mode::ConfirmClean(request),
+            Err(text) => self.notify(NoticeLevel::Info, text),
+        }
+    }
+
+    fn start_clean(&mut self, request: CleanRequest) {
+        self.busy.insert(request.project.clone());
+        self.notify(
+            NoticeLevel::Info,
+            format!("Cleaning {} in {}…", request.scope.noun(), request.name),
+        );
+
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let path = request.project;
+            let report = clean::remove_artifacts(&path, &request.artifacts);
+            let _ = tx.send(Msg::Measured(path.clone(), measure(&path)));
+            if path.join(".git").exists() {
+                let _ = tx.send(Msg::GitInspected(path.clone(), git::inspect(&path)));
+            }
+            let _ = tx.send(Msg::Cleaned(path, report));
+        });
+    }
+
+    fn finish_clean(&mut self, path: &Path, report: &CleanReport) {
+        self.busy.remove(path);
+        self.freed += report.freed;
+        self.refresh_disk();
+
+        let name = self
+            .projects
+            .iter()
+            .find(|p| p.path == path)
+            .map_or_else(|| path.display().to_string(), |p| p.name.clone());
+        let freed = bytes(report.freed);
+        match report.failures.as_slice() {
+            [] => self.notify(NoticeLevel::Success, format!("Freed {freed} from {name}")),
+            [first, rest @ ..] => self.notify(
+                NoticeLevel::Error,
+                format!(
+                    "Freed {freed} from {name}; {} failed: {first}",
+                    rest.len() + 1
+                ),
+            ),
+        }
+    }
+
+    fn notify(&mut self, level: NoticeLevel, text: String) {
+        self.notice = Some(Notice {
+            text,
+            level,
+            shown_at: Instant::now(),
+        });
+    }
+
+    fn expire_notice(&mut self) -> bool {
+        let expired = self
+            .notice
+            .as_ref()
+            .is_some_and(|n| n.shown_at.elapsed() > NOTICE_DURATION);
+        if expired {
+            self.notice = None;
+        }
+        expired
+    }
+
+    fn refresh_disk(&mut self) {
+        self.disk = self.roots.first().and_then(|r| DiskSpace::of(r));
     }
 
     fn move_by(&mut self, delta: isize) {
@@ -222,8 +396,8 @@ impl App {
         }
     }
 
-    fn project_mut(&mut self, path: &PathBuf) -> Option<&mut Project> {
-        self.projects.iter_mut().find(|p| &p.path == path)
+    fn project_mut(&mut self, path: &Path) -> Option<&mut Project> {
+        self.projects.iter_mut().find(|p| p.path == path)
     }
 
     fn rebuild_view(&mut self) {

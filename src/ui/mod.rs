@@ -1,3 +1,4 @@
+mod confirm;
 mod details;
 mod header;
 mod table;
@@ -8,11 +9,14 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Stylize;
 use ratatui::text::{Line, Span};
 
-use crate::app::App;
+use crate::app::{App, Mode};
 
 const WIDE_LAYOUT_MIN_WIDTH: u16 = 120;
 const KEYS: &[(&str, &str)] = &[
     ("↑↓/jk", "move"),
+    ("n", "clean deps"),
+    ("c", "clean cache"),
+    ("x", "clean all"),
     ("s", "sort"),
     ("r", "rescan"),
     ("q", "quit"),
@@ -40,10 +44,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     header::render(frame, app, &summary, header_area);
     table::render(frame, app, table_area);
     details::render(frame, app, details_area);
-    render_footer(frame, footer);
+    render_footer(frame, app, footer);
+
+    if let Mode::ConfirmClean(request) = &app.mode {
+        confirm::render(frame, request);
+    }
 }
 
-fn render_footer(frame: &mut Frame, area: Rect) {
+fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
+    if let Some(notice) = &app.notice {
+        let line = Line::from(format!(" {}", notice.text)).fg(theme::notice_color(notice.level));
+        frame.render_widget(line, area);
+        return;
+    }
     let spans = KEYS.iter().flat_map(|(key, action)| {
         [
             Span::raw(format!(" {key}")).bold().fg(theme::ACCENT),

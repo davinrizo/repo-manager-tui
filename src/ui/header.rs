@@ -71,6 +71,14 @@ fn stats_line(app: &App, summary: &Summary) -> Line<'static> {
         ))
         .bold()
         .fg(theme::GOOD),
+        Span::raw(if app.freed > 0 { "   Freed " } else { "" }),
+        Span::raw(if app.freed > 0 {
+            bytes(app.freed)
+        } else {
+            String::new()
+        })
+        .bold()
+        .fg(theme::ACCENT),
         Span::raw("   "),
         Span::raw(progress).fg(theme::MUTED),
     ])

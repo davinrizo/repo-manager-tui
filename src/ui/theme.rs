@@ -1,5 +1,6 @@
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::app::NoticeLevel;
 use crate::git::Safety;
 
 pub const ACCENT: Color = Color::Cyan;
@@ -31,5 +32,13 @@ pub fn usage_color(used_percent: f64) -> Color {
         WARN
     } else {
         GOOD
+    }
+}
+
+pub fn notice_color(level: NoticeLevel) -> Color {
+    match level {
+        NoticeLevel::Info => ACCENT,
+        NoticeLevel::Success => GOOD,
+        NoticeLevel::Error => BAD,
     }
 }

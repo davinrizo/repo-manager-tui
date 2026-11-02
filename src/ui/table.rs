@@ -20,10 +20,13 @@ const COLUMNS: [(&str, Constraint); 7] = [
 
 pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     let disk_total = app.disk.map_or(0, |d| d.total);
-    let rows = app
-        .view
-        .iter()
-        .map(|&i| project_row(&app.projects[i], disk_total));
+    let rows = app.view.iter().map(|&i| {
+        project_row(
+            &app.projects[i],
+            disk_total,
+            app.is_busy(&app.projects[i].path),
+        )
+    });
 
     let table = Table::new(rows, COLUMNS.map(|(_, width)| width))
         .header(Row::new(COLUMNS.map(|(title, _)| title)).style(Style::new().bold()))
@@ -34,8 +37,9 @@ pub fn render(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(table, area, &mut app.table);
 }
 
-fn project_row(project: &Project, disk_total: u64) -> Row<'static> {
+fn project_row(project: &Project, disk_total: u64, busy: bool) -> Row<'static> {
     let status = match project.safety() {
+        _ if busy => Cell::from("CLEANING…").fg(theme::ACCENT),
         Some(safety) => Cell::from(safety.label()).fg(theme::safety_color(safety)),
         None => pending(),
     };

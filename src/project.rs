@@ -18,7 +18,6 @@ impl ArtifactKind {
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct Artifact {
     pub path: PathBuf,
     pub rel: String,
