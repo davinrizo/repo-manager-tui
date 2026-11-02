@@ -149,6 +149,38 @@ pub struct Notice {
     shown_at: Instant,
 }
 
+#[derive(Clone, Copy)]
+pub struct Sort {
+    pub key: SortKey,
+    pub reversed: bool,
+}
+
+impl Sort {
+    pub fn label(self) -> String {
+        let descending = self.key.descending_by_default() != self.reversed;
+        format!(
+            "{} {}",
+            self.key.label(),
+            if descending { "↓" } else { "↑" }
+        )
+    }
+
+    fn cycle(&mut self) {
+        self.key = self.key.next();
+        self.reversed = false;
+    }
+
+    fn reverse(&mut self) {
+        self.reversed = !self.reversed;
+    }
+}
+
+#[derive(Default)]
+struct Motion {
+    count: Option<usize>,
+    pending_g: bool,
+}
+
 pub struct Config {
     pub roots: Vec<PathBuf>,
     pub max_depth: usize,
@@ -160,8 +192,7 @@ pub struct App {
     pub projects: Vec<Project>,
     pub view: Vec<usize>,
     pub table: TableState,
-    pub sort: SortKey,
-    pub sort_reversed: bool,
+    pub sort: Sort,
     pub filter: Filter,
     pub query: String,
     pub mode: Mode,
@@ -175,8 +206,7 @@ pub struct App {
     max_depth: usize,
     claude_dir: Option<PathBuf>,
     user_moved: bool,
-    count: Option<usize>,
-    pending_g: bool,
+    motion: Motion,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
 }
@@ -189,8 +219,10 @@ impl App {
             projects: Vec::new(),
             view: Vec::new(),
             table: TableState::default(),
-            sort: SortKey::Size,
-            sort_reversed: false,
+            sort: Sort {
+                key: SortKey::Size,
+                reversed: false,
+            },
             filter: Filter::All,
             query: String::new(),
             mode: Mode::Browse,
@@ -204,8 +236,7 @@ impl App {
             max_depth: config.max_depth,
             claude_dir: config.claude_dir,
             user_moved: false,
-            count: None,
-            pending_g: false,
+            motion: Motion::default(),
             tx,
             rx,
         };
@@ -333,18 +364,9 @@ impl App {
         summary
     }
 
-    pub fn sort_label(&self) -> String {
-        let descending = self.sort.descending_by_default() != self.sort_reversed;
-        format!(
-            "{} {}",
-            self.sort.label(),
-            if descending { "↓" } else { "↑" }
-        )
-    }
-
     pub fn pending_keys(&self) -> String {
-        let count = self.count.map(|n| n.to_string()).unwrap_or_default();
-        let g = if self.pending_g { "g" } else { "" };
+        let count = self.motion.count.map(|n| n.to_string()).unwrap_or_default();
+        let g = if self.motion.pending_g { "g" } else { "" };
         format!("{count}{g}")
     }
 
@@ -479,7 +501,7 @@ impl App {
                 self.filter.matches(p) && p.name.to_lowercase().contains(&query)
             })
             .collect();
-        match self.sort {
+        match self.sort.key {
             SortKey::Size => view.sort_by_key(|&i| Reverse(projects[i].size())),
             SortKey::Junk => view.sort_by_key(|&i| Reverse(projects[i].junk())),
             SortKey::Status => view.sort_by_key(|&i| {
@@ -491,7 +513,7 @@ impl App {
             }
             SortKey::Name => view.sort_by_cached_key(|&i| projects[i].name.to_lowercase()),
         }
-        if self.sort_reversed {
+        if self.sort.reversed {
             view.reverse();
         }
         self.view = view;

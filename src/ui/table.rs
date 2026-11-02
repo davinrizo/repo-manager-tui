@@ -32,7 +32,7 @@ pub fn render(frame: &mut Frame, app: &mut App, summary: &Summary, area: Rect) {
         )
     });
 
-    let mut parts = vec![format!("Projects · sorted by {}", app.sort_label())];
+    let mut parts = vec![format!("Projects · sorted by {}", app.sort.label())];
     if app.filter != Filter::All {
         parts.push(format!("showing {}", app.filter.label()));
     }

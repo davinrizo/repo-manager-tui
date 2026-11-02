@@ -24,15 +24,15 @@ impl App {
 
     fn on_browse_key(&mut self, key: KeyEvent) {
         if let KeyCode::Char(digit @ '0'..='9') = key.code
-            && (digit != '0' || self.count.is_some())
+            && (digit != '0' || self.motion.count.is_some())
         {
             let digit = digit.to_digit(10).map_or(0, |d| d as usize);
-            self.count = Some((self.count.unwrap_or(0) * 10 + digit).min(MAX_COUNT));
+            self.motion.count = Some((self.motion.count.unwrap_or(0) * 10 + digit).min(MAX_COUNT));
             return;
         }
 
-        let count = self.count.take();
-        let pending_g = std::mem::take(&mut self.pending_g);
+        let count = self.motion.count.take();
+        let pending_g = std::mem::take(&mut self.motion.pending_g);
         let steps = count.unwrap_or(1);
         let line = count.map(|n| n - 1);
 
@@ -56,8 +56,8 @@ impl App {
             KeyCode::PageUp => self.move_up(steps * PAGE),
             KeyCode::Char('g') if pending_g => self.move_to(line.unwrap_or(0)),
             KeyCode::Char('g') => {
-                self.pending_g = true;
-                self.count = count;
+                self.motion.pending_g = true;
+                self.motion.count = count;
             }
             KeyCode::Char('G') => self.move_to(line.unwrap_or(usize::MAX)),
             KeyCode::Home => self.move_to(0),
@@ -65,12 +65,11 @@ impl App {
             KeyCode::Char(' ') => self.toggle_mark(),
             KeyCode::Char('a') => self.toggle_mark_all(),
             KeyCode::Char('s') => {
-                self.sort = self.sort.next();
-                self.sort_reversed = false;
+                self.sort.cycle();
                 self.rebuild_view();
             }
             KeyCode::Char('S') => {
-                self.sort_reversed = !self.sort_reversed;
+                self.sort.reverse();
                 self.rebuild_view();
             }
             KeyCode::Char('r') => self.rescan(),

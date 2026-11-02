@@ -422,6 +422,77 @@ fn folder_rows_cannot_be_deleted() {
     assert!(app.notice.as_ref().unwrap().text.contains("Claude history"));
 }
 
+fn selected_name(app: &App) -> &str {
+    &app.selected().unwrap().name
+}
+
+fn sorted_by_name(fixture: &Fixture, count: usize) -> App {
+    for i in 1..=count {
+        fixture.plain_project(&format!("p{i:02}"));
+    }
+    let mut app = fixture.app();
+    while app.sort.key != app::SortKey::Name {
+        press(&mut app, 's');
+    }
+    app
+}
+
+#[test]
+fn vim_counts_move_by_many_rows() {
+    let fixture = Fixture::new("vim-count");
+    let mut app = sorted_by_name(&fixture, 20);
+
+    type_text(&mut app, "10");
+    assert_eq!(app.pending_keys(), "10");
+    press(&mut app, 'j');
+    assert_eq!(selected_name(&app), "p11");
+    assert_eq!(app.pending_keys(), "");
+
+    type_text(&mut app, "3k");
+    assert_eq!(selected_name(&app), "p08");
+
+    type_text(&mut app, "99j");
+    assert_eq!(selected_name(&app), "p20");
+}
+
+#[test]
+fn vim_jumps_to_top_bottom_and_line() {
+    let fixture = Fixture::new("vim-jump");
+    let mut app = sorted_by_name(&fixture, 20);
+
+    press(&mut app, 'G');
+    assert_eq!(selected_name(&app), "p20");
+    press(&mut app, 'g');
+    assert_eq!(app.pending_keys(), "g");
+    assert_eq!(selected_name(&app), "p20");
+    press(&mut app, 'g');
+    assert_eq!(selected_name(&app), "p01");
+
+    type_text(&mut app, "5G");
+    assert_eq!(selected_name(&app), "p05");
+    type_text(&mut app, "12gg");
+    assert_eq!(selected_name(&app), "p12");
+}
+
+#[test]
+fn sort_direction_can_be_reversed() {
+    let fixture = Fixture::new("sort-reverse");
+    let mut app = sorted_by_name(&fixture, 3);
+    assert_eq!(app.sort.label(), "name ↑");
+    press(&mut app, 'g');
+    press(&mut app, 'g');
+    assert_eq!(selected_name(&app), "p01");
+
+    press(&mut app, 'S');
+    assert_eq!(app.sort.label(), "name ↓");
+    press(&mut app, 'g');
+    press(&mut app, 'g');
+    assert_eq!(selected_name(&app), "p03");
+
+    press(&mut app, 's');
+    assert_eq!(app.sort.label(), "size ↓");
+}
+
 #[test]
 #[ignore = "scans a real folder; run with SCAN_DIR=<path> cargo test render_snapshot -- --ignored --nocapture"]
 fn render_snapshot() {
